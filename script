@@ -1,0 +1,198 @@
+#! /usr/bin/env python
+
+import sys
+import os
+import pipes
+import subprocess
+from Tkinter import *
+import tkMessageBox
+import re
+import timeit
+import datetime
+import math
+
+ffmpeg_path = ''
+ffprobe_path = ''
+
+
+def bootstrap():
+	# Bootstrap
+	if not python_version(2,7):
+		sys.exit("This application requires Python 2.7 or newer.")
+
+	# Check for ffmpeg/ffprobe, use local or bundled
+	global ffmpeg_path
+	global ffprobe_path
+
+	if (check_path('ffmpeg') == False) or (check_path('ffprobe') == False) or (ffmpeg_version() < 2):
+		print "No local ffmpeg found; using bundled binary."
+		ffmpeg_path = './ffmpeg'
+		ffprobe_path = './ffprobe'
+	else:
+		ffmpeg_path = check_path('ffmpeg')
+		ffprobe_path = check_path('ffprobe')
+
+	if len(sys.argv) <= 1:
+		sys.exit("No files were provided.")
+	else:
+		msg_box = MessageBox()
+
+def convert(output_name):
+
+	# get filenames passed in from cmd line and sort
+	filenames = sys.argv[1:]
+	filenames.sort()
+
+	# strip out illegal filename chars in output name
+	valid_chars = '-_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+	output_name = ''.join(c for c in output_name if c in valid_chars)
+	if output_name == '':
+		sys.exit("No name provided; exiting.")
+
+	# get source file extension and determine final output path
+	file_extension = os.path.splitext(filenames[0])[1]
+	final_output_path = os.path.expanduser("~/Desktop/") + output_name + file_extension
+
+	if os.path.isfile(final_output_path):
+		sys.exit("Output filename already exists. Try again with a new name or delete the existing file.")
+
+	print "Processing %i file(s). Do not drag more until processing complete..." % len(filenames)
+	sys.stdout.flush()
+
+	# detect number of audio tracks in first file
+	ffprobe_data = subprocess.check_output([ffprobe_path, filenames[0], "-show_streams", "-hide_banner", "-loglevel", "quiet"])
+
+	# build string of input files to concat in ffmpeg's wonky format
+	input_files = '<(echo -e "'
+	for f in filenames:
+		input_files += 'file ' + escape(f) + '\n'	
+
+	input_files += '";)'
+
+	# assemble ffmpeg command line
+	call_args = [
+		ffmpeg_path,
+		'-hide_banner',
+		'-loglevel',		'quiet',
+		'-f',				'concat',
+		'-safe',				'0',
+		'-i',				input_files,
+		'-strict',			'-2'
+		]
+
+	# add mono mixdown
+	call_args.extend([
+		'-filter_complex', 	'"[0:a]pan=mono|c0=c0+c1[amon1]; [0:a]pan=mono|c0=c0+c1[amon2]; [amon1][amon2]amix[aout]"',
+		'-map', 			'0:v',
+		'-map',				'[aout]',
+		'-ac',				'2'		
+		])
+
+
+	# add output options
+	call_args.extend([
+		'-c:v', 			'copy',
+		'-c:a', 			'aac',
+		'-ab', 				'280k'	
+	])
+
+	call_args.append(final_output_path)
+
+	time_start = timeit.default_timer()
+
+	# run ffmpeg command
+	try:
+		subprocess.check_call(' '.join(call_args), shell=True, executable="/bin/bash")
+	except subprocess.CalledProcessError as e:
+		print(e.returncode)
+		print(e.cmd)
+		# remove temp file
+		sys.exit("Error running ffmpeg.")
+
+	convert_time = math.floor((timeit.default_timer() - time_start))
+
+	print "Processing completed in %s." % str(datetime.timedelta(seconds=convert_time))
+	print "Finished file has been saved to:"
+	print final_output_path
+	print "\n\nDrag more files onto this window to process them."
+
+def python_version(major, minor):
+	if sys.version_info.major >= major:
+		if sys.version_info.minor >= minor:
+			return True
+	return False
+
+def ffmpeg_version():
+	text = subprocess.check_output([check_path('ffmpeg'), "-version"])
+	search_string = "ffmpeg version "
+	loc = text.find(search_string, 0, 50)
+	major = text[loc + len(search_string)]
+	return major
+
+def check_path(cmd):
+	loc = which(cmd)
+
+	if loc is None:
+		return False
+	return loc
+
+def which(program):
+    def is_exe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    else:
+    	paths = os.environ["PATH"].split(os.pathsep)
+    	paths.append('/usr/local/bin')
+        for path in paths:
+            path = path.strip('"')
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+
+    return None
+
+def escape(s):
+	return s.replace(' ', '\ ')
+
+class MessageBox(object):
+    def __init__(self):       
+        self.root = Tk()
+        self.root.wm_title("NanoConvert Output Name")
+        self.root.minsize(width=300,height=100)
+        self.label = Label (self.root, text= "Name to save as:")
+        self.label.pack()
+
+        self.entrytext = StringVar()
+        TextEntry = Entry(self.root, textvariable=self.entrytext)
+        TextEntry.pack()
+        TextEntry.focus_set()
+
+        self.buttontext = StringVar()
+        self.buttontext.set("Convert")
+        Button(self.root, textvariable=self.buttontext, command=self.clickedSubmit).pack()
+
+        self.label = Label (self.root, text="")
+        self.label.pack()
+        self.root.mainloop()
+
+
+    def clickedSubmit(self):
+        # Get output filename from entry box
+        output_name = self.entrytext.get()
+
+        # Kill the input window
+        self.root.destroy()
+
+        # Start nanoconvert process
+        convert(output_name)
+
+    def button_click(self, e):
+        pass
+
+
+if __name__ == '__main__':
+	bootstrap()
